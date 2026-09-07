@@ -403,6 +403,20 @@ func isDeclaredArgKey(args []OperationArg, key string) bool {
 	return false
 }
 
+// isDeclaredArgName reports whether key is exactly some operation arg's
+// declared name, ignoring camelCase aliases. Unlike isDeclaredArgKey it exists
+// so an alias-cleanup step can distinguish a colliding alias (e.g. "fooBar"
+// derived from declared "foo-bar") from another arg genuinely named "fooBar",
+// whose own caller-supplied value must survive the cleanup untouched.
+func isDeclaredArgName(args []OperationArg, key string) bool {
+	for _, a := range args {
+		if a.Name == key {
+			return true
+		}
+	}
+	return false
+}
+
 // unknownOperationArg returns the first input key that matches no declared
 // operation arg (in either its kebab-case name or camelCase alias) and no
 // reserved input key, or "" when every input key is recognized. This turns a
@@ -941,10 +955,14 @@ func normalizeInputDefaults(args []OperationArg, input map[string]any) (map[stri
 		// dual-read hacks. The required-arg check shares lookupArgInput, so the
 		// schema, dispatch, and Handler agree on both spellings.
 		raw, present := lookupArgInput(a, out)
-		if alias := camelCase(a.Name); alias != a.Name {
+		if alias := camelCase(a.Name); alias != a.Name && !isDeclaredArgName(args, alias) {
 			// Drop the alias from the handler input regardless of which key
 			// supplied the value, so a camelCase spelling is
 			// canonicalized to the declared name and never leaks a duplicate.
+			// The drop is guarded by isDeclaredArgName so an alias that is
+			// literally another declared arg's name (e.g. both "foo-bar" and
+			// "fooBar" declared) is kept: deleting it would zero the
+			// colliding arg's caller-supplied value.
 			delete(out, alias)
 		}
 		value, st, err := resolveArg(a, raw, present)

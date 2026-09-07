@@ -108,9 +108,13 @@ type PageLister[E any, F any] interface {
 
 // ScanPages iterates src's pages, calling pred on each item until it returns
 // true. Each page is fetched with cur.WithPage(start, pageSize), where cur is
-// base (or the zero options when base is nil) so that nil means "default". It
-// stops on the first match or when a page returns fewer than the effective page
-// size (end of data). pageSize <= 0 falls back to defaultPageSize. Returns the
+// base (or the zero options when base is nil) so that nil means "default"; the
+// scan starts at base.Start (0 when base is nil) and honors a caller-supplied
+// offset. It stops on the first match, or at end of data: when a page returns
+// fewer than the effective page size (the pinned short-page rule) or when a
+// page makes no forward progress (empty page / non-advancing window), so a
+// pager that always fills the window or ignores the cursor can never spin the
+// scan forever. pageSize <= 0 falls back to defaultPageSize. Returns the
 // first matching item, whether one was found, and any error from List or pred.
 func ScanPagesWithOptions[E any, F any](ctx context.Context, src PageLister[E, F], pred MatchPredicate[E], base *ListOptions[F], pageSize int) (E, bool, error) {
 	var zero E
@@ -121,7 +125,7 @@ func ScanPagesWithOptions[E any, F any](ctx context.Context, src PageLister[E, F
 	if base != nil {
 		cur = *base
 	}
-	start := 0
+	start := cur.Start
 	for {
 		items, err := src.List(ctx, cur.WithPage(start, pageSize))
 		if err != nil {
@@ -136,10 +140,16 @@ func ScanPagesWithOptions[E any, F any](ctx context.Context, src PageLister[E, F
 				return item, true, nil
 			}
 		}
-		if len(items) < pageSize {
+		next := start + len(items)
+		// End-of-data guards. The short-page rule is the pinned contract;
+		// next <= start additionally stops on a page that cannot advance the
+		// window (an empty page, a degenerate full page whose start did not
+		// move, or start overflow), so a pager that ignores the Start offset
+		// or is out of data terminates instead of looping forever.
+		if next <= start || len(items) < pageSize {
 			return zero, false, nil
 		}
-		start += len(items)
+		start = next
 	}
 }
 

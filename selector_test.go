@@ -205,7 +205,7 @@ func TestNormalizeOperationInputRejectsUnknownArg(t *testing.T) {
 	// key and must be stripped from the returned input so it never leaks into a
 	// handler's map.
 	out, err := NormalizeOperationInput(op, map[string]any{
-		ReservedAuthTokenKey:    "tok",
+		ReservedAuthTokenKey:    "sample-token",
 		ReservedRequestStateKey: "state",
 	})
 	if err != nil {

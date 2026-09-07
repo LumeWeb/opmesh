@@ -589,6 +589,75 @@ func TestInvokeAppliesDeclaredDefaults(t *testing.T) {
 	}
 }
 
+// TestNormalizeOperationInputAliasDeclaredArgCollision verifies that when an
+// operation declares BOTH a kebab-named arg ("foo-bar", whose camelCase alias
+// is "fooBar") and another arg literally named "fooBar", the colliding arg's
+// caller-supplied value survives normalization: the alias-cleanup step in
+// normalizeInputDefaults must not delete "fooBar" (it is a real declared arg's
+// name, not just the "foo-bar" alias spelling).
+func TestNormalizeOperationInputAliasDeclaredArgCollision(t *testing.T) {
+	spec := OperationSpec{
+		Name: "ops.alias-collide", Title: "Collide", Summary: "alias collides with declared arg",
+		Category: "ops", Safety: SafetyRead,
+		Interaction: InteractionAgentSafe, Visibility: VisibilityBoth,
+		Args: []OperationArg{
+			{Name: "foo-bar", Type: ArgTypeString, Default: "kebab-default"},
+			{Name: "fooBar", Type: ArgTypeString, Default: "camel-default"},
+		},
+	}
+
+	out, err := NormalizeOperationInput(NewOperation(spec), map[string]any{"foo-bar": "kebab", "fooBar": "camel"})
+	if err != nil {
+		t.Fatalf("colliding declared args rejected: %v", err)
+	}
+	if got, _ := out["fooBar"].(string); got != "camel" {
+		t.Fatalf("declared fooBar arg's supplied value was zeroed by alias cleanup, got %q", got)
+	}
+	if got, _ := out["foo-bar"].(string); got != "kebab" {
+		t.Fatalf("declared foo-bar arg's supplied value corrupted, got %q", got)
+	}
+
+	// The same guarantee must hold through a full Invoke: the handler sees
+	// the colliding arg's supplied value, not its default.
+	h := &captureHandler{}
+	c := NewCatalog()
+	spec.Handler = h
+	if err := c.Add(NewOperation(spec)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := c.Invoke(context.Background(), "ops.alias-collide", map[string]any{"foo-bar": "kebab", "fooBar": "camel"}, ActorModel); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if got, _ := h.got["fooBar"].(string); got != "camel" {
+		t.Fatalf("handler got corrupted fooBar value %q, want %q", got, "camel")
+	}
+	if got, _ := h.got["foo-bar"].(string); got != "kebab" {
+		t.Fatalf("handler got corrupted foo-bar value %q, want %q", got, "kebab")
+	}
+
+	// Non-colliding aliases must still be canonicalized (existing contract):
+	// a lone "fooBar" for a kebab-only arg is moved to "foo-bar" and the
+	// alias key removed from the handler input.
+	kebabOp := NewOperation(OperationSpec{
+		Name: "ops.kebab-only", Title: "Kebab", Summary: "kebab only",
+		Category: "ops", Safety: SafetyRead,
+		Interaction: InteractionAgentSafe, Visibility: VisibilityBoth,
+		Args: []OperationArg{
+			{Name: "foo-bar", Type: ArgTypeString, Default: "kebab-default"},
+		},
+	})
+	out2, err := NormalizeOperationInput(kebabOp, map[string]any{"fooBar": "aliased"})
+	if err != nil {
+		t.Fatalf("alias-only input rejected: %v", err)
+	}
+	if got, _ := out2["foo-bar"].(string); got != "aliased" {
+		t.Fatalf("camelCase alias not canonicalized to declared key, got %q", got)
+	}
+	if _, still := out2["fooBar"]; still {
+		t.Fatalf("non-declared alias should still be dropped from normalized input, got %#v", out2)
+	}
+}
+
 // TestInvokeAliasesCamelCaseToKebabArg verifies a caller sending the camelCase
 // spelling of a kebab-declared arg (e.g. "deviceName" for "device-name") is
 // normalized to the declared key before the Handler runs, so Handlers read a
